@@ -300,64 +300,275 @@ const getVehicleForLoggedInUser = async (req, res) => {
 
 /**
  * @desc    Get a vehicle by ID
- * @route   GET /api/vehicles/:id
+ * @route   GET /api/v1/vehicles/:id
  * @access  Private (Requires Auth)
  */
 const getVehicleById = async (req, res) => {
+  console.log("🚀 Route hit: GET /api/v1/vehicles/:id");
+
   try {
     const { id } = req.params;
+    console.log(`🔍 Fetching vehicle with ID: ${id}`);
 
-    // Fetch vehicle by ID
-    const vehicle = await Vehicle.findById(id);
-
-    if (!vehicle) {
-      return res.status(404).json({ message: "Vehicle not found" });
+    // 🔹 1. Validate MongoDB ObjectId
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      console.log("❌ Invalid vehicle ID format.");
+      return res.status(400).json({ message: "Invalid vehicle ID format." });
     }
 
-    // Respond with the vehicle data
+    // 🔹 2. Fetch vehicle from DB
+    const vehicle = await Vehicle.findById(id).lean();
+    if (!vehicle) {
+      console.log("❌ Vehicle not found.");
+      return res.status(404).json({ message: "Vehicle not found." });
+    }
+
+    console.log("✅ Vehicle found:", vehicle);
+    
+    // 🔹 3. Return vehicle data
     return res.status(200).json(vehicle);
   } catch (error) {
-    logger.error(`Failed to fetch vehicle with ID ${req.params.id}: ${error.message}`);
+    console.error(`❌ Error fetching vehicle with ID ${req.params.id}:`, error.message);
     return res.status(500).json({ message: "Internal Server Error" });
   }
 };
 
 /**
- * @desc    Update a vehicle by ID and sync with Shop-Ware
- * @route   PUT /api/vehicles/:id
+ * @desc    Update a vehicle in Skynetrix and sync with Shopware (if applicable)
+ * @route   PATCH /api/v1/vehicles/:id
  * @access  Private (Requires Auth)
  */
 const updateVehicle = async (req, res) => {
+  console.log("🚀 Route hit: PATCH /api/v1/vehicles/:id");
+
   try {
     const { id } = req.params;
-    const updateData = req.body;
+    console.log(`🔍 Updating vehicle with ID: ${id}`);
 
-    // Find and update the vehicle
-    const vehicle = await Vehicle.findByIdAndUpdate(id, updateData, {
-      new: true,
-      runValidators: true,
-    });
-
-    if (!vehicle) {
-      return res.status(404).json({ message: "Vehicle not found" });
+    // 🔹 1. Validate MongoDB ObjectId
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      console.log("❌ Invalid vehicle ID format.");
+      return res.status(400).json({ message: "Invalid vehicle ID format." });
     }
 
-    let shopWareResponse = null;
-    if (vehicle.shopWareId) {
-      try {
-        shopWareResponse = await updateShopWareVehicle(vehicle.shopWareId, updateData);
-      } catch (error) {
-        logger.error(`Failed to update vehicle in Shop-Ware: ${error.message}`);
+    // 🔹 2. Extract Allowed Fields for Update
+    const allowedUpdates = [
+      "licensePlate",
+      "registrationState",
+      "currentMileage",
+      "estimatedMilesPerYear",
+      "purchaseDate",
+      "warrantyExpiration",
+      "lastServiceDate",
+      "odometerAtLastService",
+      "serviceDueMileage",
+      "serviceAlert",
+      "status",
+      "ownershipType",
+      "isFleetVehicle",
+      "fleetNumber",
+      "telematicsId",
+      "userId",
+      "shopWareId",
+    ];
+
+    const updateData = {};
+    for (const field of allowedUpdates) {
+      if (req.body[field] !== undefined) {
+        updateData[field] = req.body[field];
       }
     }
 
+    if (Object.keys(updateData).length === 0) {
+      console.log("❌ No valid fields provided for update.");
+      return res.status(400).json({ message: "No valid fields to update." });
+    }
+
+    console.log("🛠 Update payload:", updateData);
+
+    // 🔹 3. Fetch Vehicle from DB
+    const vehicle = await Vehicle.findById(id);
+    if (!vehicle) {
+      console.log("❌ Vehicle not found.");
+      return res.status(404).json({ message: "Vehicle not found." });
+    }
+
+    // 🔹 4. Perform Update in Skynetrix
+    Object.assign(vehicle, updateData);
+    await vehicle.save();
+    console.log("✅ Vehicle updated in Skynetrix:", vehicle);
+
+    // 🔹 5. Sync with Shopware (if applicable)
+    if (vehicle.shopWareId) {
+      try {
+        console.log(`🔄 Syncing updates with Shopware for vehicle ID: ${vehicle.shopWareId}`);
+
+        const shopwareResponse = await axios.patch(
+          `${SHOPWARE_BASE_URL}/api/v1/vehicles/${vehicle.shopWareId}`,
+          {
+            vin: vehicle.vin,
+            make: vehicle.make,
+            model: vehicle.model,
+            year: vehicle.year,
+            licensePlate: vehicle.licensePlate,
+            registrationState: vehicle.registrationState,
+            currentMileage: vehicle.currentMileage,
+            estimatedMilesPerYear: vehicle.estimatedMilesPerYear,
+            purchaseDate: vehicle.purchaseDate,
+            warrantyExpiration: vehicle.warrantyExpiration,
+            lastServiceDate: vehicle.lastServiceDate,
+            odometerAtLastService: vehicle.odometerAtLastService,
+            serviceDueMileage: vehicle.serviceDueMileage,
+            serviceAlert: vehicle.serviceAlert,
+            status: vehicle.status,
+            ownershipType: vehicle.ownershipType,
+            isFleetVehicle: vehicle.isFleetVehicle,
+            fleetNumber: vehicle.fleetNumber,
+            telematicsId: vehicle.telematicsId,
+          },
+          {
+            headers: {
+              "X-Api-Partner-Id": SHOPWARE_X_API_PARTNER_ID,
+              "X-Api-Secret": SHOPWARE_X_API_SECRET,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+
+        console.log("✅ Shopware vehicle updated successfully:", shopwareResponse.data);
+      } catch (error) {
+        console.error("❌ Failed to update vehicle in Shopware:", error.response?.data || error.message);
+        return res.status(500).json({ message: "Vehicle updated in Skynetrix but failed to sync with Shopware." });
+      }
+    }
+
+    // 🔹 6. Return Success Response
     return res.status(200).json({
-      message: "Vehicle updated successfully",
+      message: "Vehicle updated successfully.",
       vehicle,
-      shopWareResponse,
+      shopwareSyncStatus: vehicle.shopWareId ? "Success" : "Not Synced",
     });
   } catch (error) {
-    logger.error(`Failed to update vehicle with ID ${req.params.id}: ${error.message}`);
+    console.error(`❌ Error updating vehicle with ID ${req.params.id}:`, error.message);
+    return res.status(500).json({ message: "Internal Server Error" });
+  }
+};
+
+/**
+ * @desc    Soft delete a vehicle by updating its status
+ * @route   PUT /api/v1/vehicles/:id/status
+ * @access  Private (Requires Auth)
+ */
+const updateVehicleStatus = async (req, res) => {
+  console.log("🚀 Route hit: PUT /api/v1/vehicles/:id/status (Soft Delete)");
+
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
+
+    console.log(`🔍 Updating vehicle status. Vehicle ID: ${id}, New Status: ${status}`);
+
+    // 🔹 1. Validate MongoDB ObjectId
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      console.log("❌ Invalid vehicle ID format.");
+      return res.status(400).json({ message: "Invalid vehicle ID format." });
+    }
+
+    // 🔹 2. Validate Status Value
+    const validStatuses = ["inactive", "archived", "sold"];
+    if (!validStatuses.includes(status)) {
+      console.log("❌ Invalid status provided.");
+      return res.status(400).json({ message: "Invalid status. Allowed values: inactive, archived, sold." });
+    }
+
+    // 🔹 3. Fetch Vehicle from DB
+    const vehicle = await Vehicle.findById(id);
+    if (!vehicle) {
+      console.log("❌ Vehicle not found.");
+      return res.status(404).json({ message: "Vehicle not found." });
+    }
+
+    // 🔹 4. Update Vehicle Status
+    vehicle.status = status;
+    await vehicle.save();
+
+    console.log(`✅ Vehicle status updated successfully: ${status}`);
+
+    // 🔹 5. Return Success Response
+    return res.status(200).json({
+      message: `Vehicle status updated to '${status}' successfully.`,
+      vehicle,
+    });
+  } catch (error) {
+    console.error(`❌ Error updating vehicle status with ID ${req.params.id}:`, error.message);
+    return res.status(500).json({ message: "Internal Server Error" });
+  }
+};
+
+/**
+ * @desc    Permanently delete a vehicle from Skynetrix & Shopware (if applicable)
+ * @route   DELETE /api/v1/vehicles/:id
+ * @access  Private (Requires Auth)
+ */
+const deleteVehicle = async (req, res) => {
+  console.log("🚀 Route hit: DELETE /api/v1/vehicles/:id (Hard Delete)");
+
+  try {
+    const { id } = req.params;
+
+    console.log(`🔍 Deleting vehicle with ID: ${id}`);
+
+    // 🔹 1. Validate MongoDB ObjectId
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      console.log("❌ Invalid vehicle ID format.");
+      return res.status(400).json({ message: "Invalid vehicle ID format." });
+    }
+
+    // 🔹 2. Fetch Vehicle from DB
+    const vehicle = await Vehicle.findById(id);
+    if (!vehicle) {
+      console.log("❌ Vehicle not found.");
+      return res.status(404).json({ message: "Vehicle not found." });
+    }
+
+    // 🔹 3. If Shopware Sync Exists, Delete from Shopware
+    if (vehicle.shopWareId) {
+      try {
+        console.log(`🔄 Deleting vehicle from Shopware: ${vehicle.shopWareId}`);
+
+        const shopwareResponse = await axios.delete(
+          `${process.env.SHOPWARE_API_URL}/vehicles/${vehicle.shopWareId}`,
+          {
+            headers: {
+              "X-Api-Partner-Id": process.env.SHOPWARE_X_API_PARTNER_ID,
+              "X-Api-Secret": process.env.SHOPWARE_X_API_SECRET,
+            },
+          }
+        );
+
+        if (shopwareResponse.status === 200) {
+          console.log("✅ Vehicle successfully deleted from Shopware.");
+        } else {
+          console.warn("⚠️ Unexpected response while deleting from Shopware.");
+        }
+      } catch (error) {
+        console.error("❌ Failed to delete vehicle from Shopware:", error.response?.data || error.message);
+        return res.status(500).json({ message: "Failed to delete vehicle from Shopware. Vehicle was not deleted from Skynetrix." });
+      }
+    }
+
+    // 🔹 4. Delete Vehicle from Skynetrix DB
+    await vehicle.deleteOne();
+    console.log("✅ Vehicle successfully deleted from Skynetrix.");
+
+    // 🔹 5. Return Success Response
+    return res.status(200).json({
+      message: "Vehicle deleted successfully.",
+      deletedVehicleId: id,
+      shopwareDeleted: !!vehicle.shopWareId, // Boolean: true if Shopware was deleted
+    });
+  } catch (error) {
+    console.error(`❌ Error deleting vehicle with ID ${req.params.id}:`, error.message);
     return res.status(500).json({ message: "Internal Server Error" });
   }
 };
@@ -370,9 +581,8 @@ module.exports = {
   getVehicleForLoggedInUser,
   getVehicleById,
   updateVehicle,
-  //updateMileage,
-  //deleteVehicle,
+  updateVehicleStatus,
+  deleteVehicle
   //searchVehicles,
   //getVehicleReports,
-  //syncVehicleWithShopWare,
 };

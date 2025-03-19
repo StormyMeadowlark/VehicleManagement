@@ -2,7 +2,7 @@ const mongoose = require("mongoose");
 const httpMocks = require("node-mocks-http");
 const Vehicle = require("../models/vehicleModel");
 const axios = require("axios");
-const { createVehicle, getAllVehicles, getVehicleByCustomer, getVehicleForLoggedInUser, getVehicleById } = require("../controllers/vehicleController");
+const { createVehicle, getAllVehicles, getVehicleByCustomer, getVehicleForLoggedInUser, getVehicleById, updateVehicle, updateVehicleStatus, deleteVehicle } = require("../controllers/vehicleController");
 require("dotenv").config({ path: ".env" });
 const request = require("supertest"); // ✅ Add this line
 const app = require("../index")
@@ -628,4 +628,625 @@ describe("GET /api/vehicles/me - Get Vehicles for Logged-in User", () => {
     );
     consoleSpy.mockRestore();
   });
+});
+
+test("should return a vehicle when a valid ID is provided", async () => {
+  const vehicle = await Vehicle.create({
+    userId: new mongoose.Types.ObjectId(),
+    vin: "1HGCM82633A123456",
+    make: "Honda",
+    model: "Civic",
+    year: 2020,
+  });
+
+  const req = httpMocks.createRequest({
+    method: "GET",
+    url: `/api/vehicles/${vehicle._id}`,
+    params: { id: vehicle._id.toString() },
+  });
+
+  const res = httpMocks.createResponse();
+  await getVehicleById(req, res);
+
+  const data = res._getJSONData();
+  expect(res.statusCode).toBe(200);
+  expect(data.vin).toBe("1HGCM82633A123456");
+  expect(data.make).toBe("Honda");
+  expect(data.model).toBe("Civic");
+  expect(data.year).toBe(2020);
+});
+
+/**
+ * ✅ TEST 2: Return 404 if vehicle not found
+ */
+test("should return 404 if vehicle is not found", async () => {
+  const nonExistentId = new mongoose.Types.ObjectId();
+
+  const req = httpMocks.createRequest({
+    method: "GET",
+    url: `/api/vehicles/${nonExistentId}`,
+    params: { id: nonExistentId.toString() },
+  });
+
+  const res = httpMocks.createResponse();
+  await getVehicleById(req, res);
+
+  const data = res._getJSONData();
+  expect(res.statusCode).toBe(404);
+  expect(data.message).toBe("Vehicle not found.");
+});
+
+/**
+ * ✅ TEST 3: Return 400 for invalid ObjectId format
+ */
+test("should return 400 for an invalid MongoDB ObjectId format", async () => {
+  const invalidId = "123invalidID"; // Not a valid ObjectId
+
+  const req = httpMocks.createRequest({
+    method: "GET",
+    url: `/api/vehicles/${invalidId}`,
+    params: { id: invalidId },
+  });
+
+  const res = httpMocks.createResponse();
+  await getVehicleById(req, res);
+
+  const data = res._getJSONData();
+  expect(res.statusCode).toBe(400);
+  expect(data.message).toBe("Invalid vehicle ID format.");
+});
+
+/**
+ * ✅ TEST 4: Handle unexpected database errors
+ */
+test("should return 500 if there is a database error", async () => {
+  const mockFindById = jest
+    .spyOn(Vehicle, "findById")
+    .mockImplementationOnce(() => {
+      throw new Error("Database error");
+    });
+
+  const vehicleId = new mongoose.Types.ObjectId();
+
+  const req = httpMocks.createRequest({
+    method: "GET",
+    url: `/api/vehicles/${vehicleId}`,
+    params: { id: vehicleId.toString() },
+  });
+
+  const res = httpMocks.createResponse();
+  await getVehicleById(req, res);
+
+  const data = res._getJSONData();
+  expect(res.statusCode).toBe(500);
+  expect(data.message).toBe("Internal Server Error");
+
+  mockFindById.mockRestore();
+});
+
+test("should update a vehicle in Skynetrix and sync with Shopware", async () => {
+  const vehicle = await Vehicle.create({
+    userId: new mongoose.Types.ObjectId(),
+    vin: "1HGCM82633A123456",
+    make: "Honda",
+    model: "Civic",
+    year: 2020,
+    currentMileage: 40000,
+    status: "active",
+    shopWareId: "shopware-vehicle-123",
+  });
+
+  axios.patch.mockResolvedValue({
+    status: 200,
+    data: { success: true },
+  });
+
+  const req = httpMocks.createRequest({
+    method: "PATCH",
+    url: `/api/v1/vehicles/${vehicle._id}`,
+    params: { id: vehicle._id.toString() },
+    body: {
+      currentMileage: 45000,
+      status: "inactive",
+    },
+  });
+
+  const res = httpMocks.createResponse();
+  await updateVehicle(req, res);
+
+  const data = res._getJSONData();
+  expect(res.statusCode).toBe(200);
+  expect(data.message).toBe("Vehicle updated successfully.");
+  expect(data.vehicle.currentMileage).toBe(45000);
+  expect(data.vehicle.status).toBe("inactive");
+  expect(data.shopwareSyncStatus).toBe("Success");
+});
+
+/**
+ * ✅ TEST 3: Handle Shopware Sync Failure Gracefully
+ */
+test("should update vehicle but handle Shopware sync failure gracefully", async () => {
+  const vehicle = await Vehicle.create({
+    userId: new mongoose.Types.ObjectId(),
+    vin: "1HGCM82633A123456",
+    make: "Honda",
+    model: "Civic",
+    year: 2020,
+    currentMileage: 40000,
+    status: "active",
+    shopWareId: "shopware-vehicle-123",
+  });
+
+  axios.patch.mockRejectedValue(new Error("Shopware API error"));
+
+  const req = httpMocks.createRequest({
+    method: "PATCH",
+    url: `/api/v1/vehicles/${vehicle._id}`,
+    params: { id: vehicle._id.toString() },
+    body: {
+      currentMileage: 45000,
+      status: "inactive",
+    },
+  });
+
+  const res = httpMocks.createResponse();
+  await updateVehicle(req, res);
+
+  const data = res._getJSONData();
+  expect(res.statusCode).toBe(500);
+  expect(data.message).toBe(
+    "Vehicle updated in Skynetrix but failed to sync with Shopware."
+  );
+});
+
+/**
+ * ✅ TEST 4: Return 404 if vehicle not found
+ */
+test("should return 404 if vehicle is not found", async () => {
+  const nonExistentId = new mongoose.Types.ObjectId();
+
+  const req = httpMocks.createRequest({
+    method: "PATCH",
+    url: `/api/v1/vehicles/${nonExistentId}`,
+    params: { id: nonExistentId.toString() },
+    body: {
+      currentMileage: 50000,
+    },
+  });
+
+  const res = httpMocks.createResponse();
+  await updateVehicle(req, res);
+
+  const data = res._getJSONData();
+  expect(res.statusCode).toBe(404);
+  expect(data.message).toBe("Vehicle not found.");
+});
+
+/**
+ * ✅ TEST 5: Return 400 for invalid MongoDB ObjectId
+ */
+test("should return 400 for an invalid vehicle ID format", async () => {
+  const invalidId = "123invalidID";
+
+  const req = httpMocks.createRequest({
+    method: "PATCH",
+    url: `/api/v1/vehicles/${invalidId}`,
+    params: { id: invalidId },
+    body: {
+      currentMileage: 50000,
+    },
+  });
+
+  const res = httpMocks.createResponse();
+  await updateVehicle(req, res);
+
+  const data = res._getJSONData();
+  expect(res.statusCode).toBe(400);
+  expect(data.message).toBe("Invalid vehicle ID format.");
+});
+
+/**
+ * ✅ TEST 6: Return 400 if no valid fields provided
+ */
+test("should return 400 if no valid fields are provided for update", async () => {
+  const vehicle = await Vehicle.create({
+    userId: new mongoose.Types.ObjectId(),
+    vin: "1HGCM82633A123456",
+    make: "Honda",
+    model: "Civic",
+    year: 2020,
+  });
+
+  const req = httpMocks.createRequest({
+    method: "PATCH",
+    url: `/api/v1/vehicles/${vehicle._id}`,
+    params: { id: vehicle._id.toString() },
+    body: {}, // No update fields
+  });
+
+  const res = httpMocks.createResponse();
+  await updateVehicle(req, res);
+
+  const data = res._getJSONData();
+  expect(res.statusCode).toBe(400);
+  expect(data.message).toBe("No valid fields to update.");
+});
+
+/**
+ * ✅ TEST 7: Handle unexpected database errors
+ */
+test("should return 500 if there is a database error", async () => {
+  const mockFindByIdAndUpdate = jest
+    .spyOn(Vehicle, "findById")
+    .mockImplementationOnce(() => {
+      throw new Error("Database error");
+    });
+
+  const vehicleId = new mongoose.Types.ObjectId();
+
+  const req = httpMocks.createRequest({
+    method: "PATCH",
+    url: `/api/v1/vehicles/${vehicleId}`,
+    params: { id: vehicleId.toString() },
+    body: {
+      currentMileage: 50000,
+    },
+  });
+
+  const res = httpMocks.createResponse();
+  await updateVehicle(req, res);
+
+  const data = res._getJSONData();
+  expect(res.statusCode).toBe(500);
+  expect(data.message).toBe("Internal Server Error");
+
+  mockFindByIdAndUpdate.mockRestore();
+});
+
+/**
+ * ✅ TEST 1: Successfully update vehicle status to inactive
+ */
+test("should update vehicle status to inactive", async () => {
+  const vehicle = await Vehicle.create({
+    userId: new mongoose.Types.ObjectId(),
+    vin: "1HGCM82633A123456",
+    make: "Honda",
+    model: "Civic",
+    year: 2020,
+    status: "active",
+  });
+
+  const req = httpMocks.createRequest({
+    method: "PUT",
+    url: `/api/v1/vehicles/${vehicle._id}/status`,
+    params: { id: vehicle._id.toString() },
+    body: { status: "inactive" },
+  });
+
+  const res = httpMocks.createResponse();
+  await updateVehicleStatus(req, res);
+
+  const data = res._getJSONData();
+  expect(res.statusCode).toBe(200);
+  expect(data.message).toBe("Vehicle status updated to 'inactive' successfully.");
+  expect(data.vehicle.status).toBe("inactive");
+});
+
+/**
+ * ✅ TEST 2: Successfully update vehicle status to archived
+ */
+test("should update vehicle status to archived", async () => {
+  const vehicle = await Vehicle.create({
+    userId: new mongoose.Types.ObjectId(),
+    vin: "JH4DB1650NS000000",
+    make: "Acura",
+    model: "Integra",
+    year: 1995,
+    status: "active",
+  });
+
+  const req = httpMocks.createRequest({
+    method: "PUT",
+    url: `/api/v1/vehicles/${vehicle._id}/status`,
+    params: { id: vehicle._id.toString() },
+    body: { status: "archived" },
+  });
+
+  const res = httpMocks.createResponse();
+  await updateVehicleStatus(req, res);
+
+  const data = res._getJSONData();
+  expect(res.statusCode).toBe(200);
+  expect(data.message).toBe("Vehicle status updated to 'archived' successfully.");
+  expect(data.vehicle.status).toBe("archived");
+});
+
+/**
+ * ✅ TEST 3: Successfully update vehicle status to sold
+ */
+test("should update vehicle status to sold", async () => {
+  const vehicle = await Vehicle.create({
+    userId: new mongoose.Types.ObjectId(),
+    vin: "WBAEV53444KM00000",
+    make: "BMW",
+    model: "3 Series",
+    year: 2004,
+    status: "active",
+  });
+
+  const req = httpMocks.createRequest({
+    method: "PUT",
+    url: `/api/v1/vehicles/${vehicle._id}/status`,
+    params: { id: vehicle._id.toString() },
+    body: { status: "sold" },
+  });
+
+  const res = httpMocks.createResponse();
+  await updateVehicleStatus(req, res);
+
+  const data = res._getJSONData();
+  expect(res.statusCode).toBe(200);
+  expect(data.message).toBe("Vehicle status updated to 'sold' successfully.");
+  expect(data.vehicle.status).toBe("sold");
+});
+
+/**
+ * ❌ TEST 4: Return 400 for invalid status value
+ */
+test("should return 400 for invalid status", async () => {
+  const vehicle = await Vehicle.create({
+    userId: new mongoose.Types.ObjectId(),
+    vin: "WAUZZZ8P8BA000000",
+    make: "Audi",
+    model: "A3",
+    year: 2011,
+    status: "active",
+  });
+
+  const req = httpMocks.createRequest({
+    method: "PUT",
+    url: `/api/v1/vehicles/${vehicle._id}/status`,
+    params: { id: vehicle._id.toString() },
+    body: { status: "deleted" }, // ❌ Invalid status
+  });
+
+  const res = httpMocks.createResponse();
+  await updateVehicleStatus(req, res);
+
+  const data = res._getJSONData();
+  expect(res.statusCode).toBe(400);
+  expect(data.message).toBe("Invalid status. Allowed values: inactive, archived, sold.");
+});
+
+/**
+ * ❌ TEST 5: Return 404 if vehicle not found
+ */
+test("should return 404 if vehicle does not exist", async () => {
+  const nonExistentId = new mongoose.Types.ObjectId();
+
+  const req = httpMocks.createRequest({
+    method: "PUT",
+    url: `/api/v1/vehicles/${nonExistentId}/status`,
+    params: { id: nonExistentId.toString() },
+    body: { status: "inactive" },
+  });
+
+  const res = httpMocks.createResponse();
+  await updateVehicleStatus(req, res);
+
+  const data = res._getJSONData();
+  expect(res.statusCode).toBe(404);
+  expect(data.message).toBe("Vehicle not found.");
+});
+
+/**
+ * ❌ TEST 6: Return 400 for invalid MongoDB ObjectId
+ */
+test("should return 400 for an invalid vehicle ID format", async () => {
+  const invalidId = "123invalidID";
+
+  const req = httpMocks.createRequest({
+    method: "PUT",
+    url: `/api/v1/vehicles/${invalidId}/status`,
+    params: { id: invalidId },
+    body: { status: "inactive" },
+  });
+
+  const res = httpMocks.createResponse();
+  await updateVehicleStatus(req, res);
+
+  const data = res._getJSONData();
+  expect(res.statusCode).toBe(400);
+  expect(data.message).toBe("Invalid vehicle ID format.");
+});
+
+/**
+ * ❌ TEST 7: Handle unexpected database errors
+ */
+test("should return 500 if there is a database error", async () => {
+  const mockFindById = jest.spyOn(Vehicle, "findById").mockImplementationOnce(() => {
+    throw new Error("Database error");
+  });
+
+  const vehicleId = new mongoose.Types.ObjectId();
+
+  const req = httpMocks.createRequest({
+    method: "PUT",
+    url: `/api/v1/vehicles/${vehicleId}/status`,
+    params: { id: vehicleId.toString() },
+    body: { status: "inactive" },
+  });
+
+  const res = httpMocks.createResponse();
+  await updateVehicleStatus(req, res);
+
+  const data = res._getJSONData();
+  expect(res.statusCode).toBe(500);
+  expect(data.message).toBe("Internal Server Error");
+
+  mockFindById.mockRestore();
+});
+
+/**
+ * ✅ TEST 1: Successfully delete a vehicle (not linked to Shopware)
+ */
+test("should delete vehicle from Skynetrix when Shopware is not linked", async () => {
+  const vehicle = await Vehicle.create({
+    userId: new mongoose.Types.ObjectId(),
+    vin: "1HGCM82633A123456",
+    make: "Honda",
+    model: "Civic",
+    year: 2020,
+    shopWareId: null, // No Shopware sync
+  });
+
+  const req = httpMocks.createRequest({
+    method: "DELETE",
+    url: `/api/v1/vehicles/${vehicle._id}`,
+    params: { id: vehicle._id.toString() },
+  });
+
+  const res = httpMocks.createResponse();
+  await deleteVehicle(req, res);
+
+  const data = res._getJSONData();
+  expect(res.statusCode).toBe(200);
+  expect(data.message).toBe("Vehicle deleted successfully.");
+  expect(data.shopwareDeleted).toBe(false);
+
+  const deletedVehicle = await Vehicle.findById(vehicle._id);
+  expect(deletedVehicle).toBeNull(); // Ensure vehicle is removed from DB
+});
+
+/**
+ * ✅ TEST 2: Successfully delete a vehicle from both Skynetrix and Shopware
+ */
+test("should delete vehicle from both Skynetrix and Shopware", async () => {
+  const vehicle = await Vehicle.create({
+    userId: new mongoose.Types.ObjectId(),
+    vin: "JH4DB1650NS000000",
+    make: "Acura",
+    model: "Integra",
+    year: 1995,
+    shopWareId: "mockShopwareId",
+  });
+
+  // Mock successful Shopware API deletion
+  axios.delete.mockResolvedValue({ status: 200 });
+
+  const req = httpMocks.createRequest({
+    method: "DELETE",
+    url: `/api/v1/vehicles/${vehicle._id}`,
+    params: { id: vehicle._id.toString() },
+  });
+
+  const res = httpMocks.createResponse();
+  await deleteVehicle(req, res);
+
+  const data = res._getJSONData();
+  expect(res.statusCode).toBe(200);
+  expect(data.message).toBe("Vehicle deleted successfully.");
+  expect(data.shopwareDeleted).toBe(true);
+
+  const deletedVehicle = await Vehicle.findById(vehicle._id);
+  expect(deletedVehicle).toBeNull(); // Ensure vehicle is removed from DB
+});
+
+/**
+ * ❌ TEST 3: Fail to delete vehicle if Shopware API fails
+ */
+test("should not delete vehicle from Skynetrix if Shopware deletion fails", async () => {
+  const vehicle = await Vehicle.create({
+    userId: new mongoose.Types.ObjectId(),
+    vin: "WBAEV53444KM00000",
+    make: "BMW",
+    model: "3 Series",
+    year: 2004,
+    shopWareId: "mockShopwareId",
+  });
+
+  // Mock failed Shopware API deletion
+  axios.delete.mockRejectedValue(new Error("Shopware API error"));
+
+  const req = httpMocks.createRequest({
+    method: "DELETE",
+    url: `/api/v1/vehicles/${vehicle._id}`,
+    params: { id: vehicle._id.toString() },
+  });
+
+  const res = httpMocks.createResponse();
+  await deleteVehicle(req, res);
+
+  const data = res._getJSONData();
+  expect(res.statusCode).toBe(500);
+  expect(data.message).toBe("Failed to delete vehicle from Shopware. Vehicle was not deleted from Skynetrix.");
+
+  const existingVehicle = await Vehicle.findById(vehicle._id);
+  expect(existingVehicle).not.toBeNull(); // Ensure vehicle is still in DB
+});
+
+/**
+ * ❌ TEST 4: Return 404 if vehicle not found
+ */
+test("should return 404 if vehicle does not exist", async () => {
+  const nonExistentId = new mongoose.Types.ObjectId();
+
+  const req = httpMocks.createRequest({
+    method: "DELETE",
+    url: `/api/v1/vehicles/${nonExistentId}`,
+    params: { id: nonExistentId.toString() },
+  });
+
+  const res = httpMocks.createResponse();
+  await deleteVehicle(req, res);
+
+  const data = res._getJSONData();
+  expect(res.statusCode).toBe(404);
+  expect(data.message).toBe("Vehicle not found.");
+});
+
+/**
+ * ❌ TEST 5: Return 400 for invalid MongoDB ObjectId
+ */
+test("should return 400 for an invalid vehicle ID format", async () => {
+  const invalidId = "123invalidID";
+
+  const req = httpMocks.createRequest({
+    method: "DELETE",
+    url: `/api/v1/vehicles/${invalidId}`,
+    params: { id: invalidId },
+  });
+
+  const res = httpMocks.createResponse();
+  await deleteVehicle(req, res);
+
+  const data = res._getJSONData();
+  expect(res.statusCode).toBe(400);
+  expect(data.message).toBe("Invalid vehicle ID format.");
+});
+
+/**
+ * ❌ TEST 6: Handle unexpected database errors
+ */
+test("should return 500 if there is a database error", async () => {
+  const mockFindById = jest.spyOn(Vehicle, "findById").mockImplementationOnce(() => {
+    throw new Error("Database error");
+  });
+
+  const vehicleId = new mongoose.Types.ObjectId();
+
+  const req = httpMocks.createRequest({
+    method: "DELETE",
+    url: `/api/v1/vehicles/${vehicleId}`,
+    params: { id: vehicleId.toString() },
+  });
+
+  const res = httpMocks.createResponse();
+  await deleteVehicle(req, res);
+
+  const data = res._getJSONData();
+  expect(res.statusCode).toBe(500);
+  expect(data.message).toBe("Internal Server Error");
+
+  mockFindById.mockRestore();
 });

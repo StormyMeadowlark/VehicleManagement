@@ -5,8 +5,9 @@ const {
   getAllVehicles,
   getVehicleById,
   updateVehicle,
+  updateVehicleStatus,
   //updateMileage,
-  //deleteVehicle,
+  deleteVehicle,
   //searchVehicles,
   //getVehicleReports,
   //syncVehicleWithShopWare,
@@ -23,8 +24,9 @@ router.get("/by-customer/:id", getVehicleByCustomer)
 router.get("/me", protect, getVehicleForLoggedInUser)
 router.get("/:id", getVehicleById); // Get Vehicle by ID
 router.put("/:id", updateVehicle); // Full Vehicle Update (Auto Sync Shop-Ware)
+router.put("/:id/status", updateVehicleStatus);
 //router.patch("/:id/mileage", updateMileage); // Update Mileage (Auto Sync Shop-Ware)
-//router.delete("/:id", deleteVehicle); // Delete Vehicle
+router.delete("/:id", deleteVehicle); // Delete Vehicle
 
 // 📊 Search & Reports
 //router.get("/search", searchVehicles); // Search Vehicles
