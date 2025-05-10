@@ -1,27 +1,27 @@
-// routes/vehicleRoutes.js
 const express = require("express");
+const router = express.Router();
+const authenticate = require("../middleware/authMiddleware");
+
 const {
   createVehicle,
   getAllVehicles,
+  getVehicleByCustomer,
+  getVehicleForLoggedInUser,
   getVehicleById,
   updateVehicle,
   updateVehicleStatus,
-  //updateMileage,
   deleteVehicle,
-  //searchVehicles,
-  //getVehicleReports,
-  //syncVehicleWithShopWare,
-  getVehicleByCustomer,
-  getVehicleForLoggedInUser
+  getVehicleVinsByCustomer,
 } = require("../controllers/vehicleController");
-const { protect } = require("../middleware/protect")
-const router = express.Router();
+const { protect } = require("../middleware/protect");
+
 
 // 🚗 Vehicle CRUD Routes
-router.post("/", createVehicle); // Create Vehicle
+router.post("/", authenticate, createVehicle); // Create Vehicle
 router.get("/", getAllVehicles); // Get All Vehicles
-router.get("/by-customer/:id", getVehicleByCustomer)
-router.get("/me", protect, getVehicleForLoggedInUser)
+router.get("/by-customer/:id", getVehicleByCustomer);
+router.get("/by-customer/:id/vins", getVehicleVinsByCustomer);
+router.get("/me", protect, getVehicleForLoggedInUser);
 router.get("/:id", getVehicleById); // Get Vehicle by ID
 router.put("/:id", updateVehicle); // Full Vehicle Update (Auto Sync Shop-Ware)
 router.put("/:id/status", updateVehicleStatus);

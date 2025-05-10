@@ -19,10 +19,11 @@ const protect = (req, res, next) => {
     console.log("🔑 Decoded Token:", decoded);
 
     req.user = {
-      id: decoded.id,
-      role: decoded.role,
-      tenantIds: decoded.tenantIds || [],
-      email: decoded.email,
+      id: decoded.id || "Unknown",
+      email: decoded.email || "Unknown",
+      userRole: decoded.userRole || "Unauthenticated",
+      tenantId: decoded.tenantId || "Unknown",
+      tenantType: decoded.tenantType || "Unknown",
     };
 
     console.log("✅ User attached to request:", req.user);

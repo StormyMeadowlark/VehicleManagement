@@ -5,7 +5,7 @@ const { createShopWareVehicle } = require("./shopWareController");
 const logger = require("../utils/logger");
 const axios = require("axios")
 const mongoose = require("mongoose")
-
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
 // Shopware API Config
 const SHOPWARE_BASE_URL = process.env.SHOPWARE_API_URL;
@@ -17,116 +17,57 @@ const SHOPWARE_X_API_SECRET = process.env.SHOPWARE_X_API_SECRET;
  * @route   POST /api/v1/vehicles
  * @access  Private
  */
+
 const createVehicle = async (req, res) => {
   console.log("🔹 Incoming vehicle creation request:", req.body);
 
   try {
-    const { userId, vin, make, model, year } = req.body;
+    const { vin, make, model, year, userId: inputUserId } = req.body;
+    const fallbackUserId = req.user?.id;
+    const userId = inputUserId || fallbackUserId;
 
-    // 🔹 1. Validate Required Fields
+    // 🔒 Validate Required Fields
     if (!userId || !vin || !make || !model || !year) {
-      console.log("❌ Missing required fields:", { userId, vin, make, model, year });
-      return res.status(400).json({ message: "User ID, VIN, Make, Model, and Year are required." });
+      console.log("❌ Missing required fields:", {
+        userId,
+        vin,
+        make,
+        model,
+        year,
+      });
+      return res.status(400).json({
+        message:
+          "VIN, Make, Model, Year, and User ID (from body or token) are required.",
+      });
     }
 
-    console.log("✅ Required fields validated, proceeding...");
+    console.log("✅ Using user ID:", userId);
 
-    // 🔹 2. Fetch User and Tenant Data
-    let tenantId, shopwareSyncEnabled;
-    try {
-      const userResponse = await axios.get(`${process.env.USER_BASE_URL}/users/${userId}`);
-      tenantId = userResponse.data?.tenantId;
-
-      if (!tenantId) {
-        return res.status(404).json({ message: "User's tenant not found." });
-      }
-
-      const tenantResponse = await axios.get(`${process.env.TENANT_SERVICE_URL}/tenants/${tenantId}`);
-      shopwareSyncEnabled = tenantResponse.data?.shopware?.enabled || false;
-
-      console.log(`✅ Tenant ID: ${tenantId}, Shopware Sync Enabled: ${shopwareSyncEnabled}`);
-    } catch (error) {
-      console.error("❌ Error fetching user or tenant data:", error.message);
-      return res.status(500).json({ message: "Failed to retrieve user or tenant data." });
-    }
-
-    // 🔹 3. Create Vehicle in Skynetrix Database
+    // 🧾 Save vehicle to DB
     const vehicle = new Vehicle({
       userId,
       vin,
       make,
       model,
       year,
-      shopwareVehicleId: null, // Will update if Shopware sync is successful
     });
 
     await vehicle.save();
-    console.log("✅ Vehicle saved to Skynetrix DB:", vehicle._id);
+    console.log("✅ Vehicle saved in MongoDB:", vehicle._id);
 
-    // 🔹 4. Sync with Shopware (ONLY IF ENABLED)
-    let shopwareVehicleId = null;
-
-    if (shopwareSyncEnabled) {
-      let shopwareUserId;
-      try {
-        const userResponse = await axios.get(`${process.env.USER_BASE_URL}/users/${userId}`);
-        shopwareUserId = userResponse.data?.shopwareUserId;
-
-        if (!shopwareUserId) {
-          console.log("❌ Shopware User ID not found, skipping Shopware sync.");
-        } else {
-          console.log("✅ Retrieved Shopware User ID:", shopwareUserId);
-
-          try {
-            const shopwareResponse = await axios.post(
-              `${SHOPWARE_BASE_URL}/api/v1/tenants/${process.env.SHOPWARE_TENANT_ID}/vehicles`,
-              {
-                vin,
-                make,
-                model,
-                year,
-                customer_ids: [shopwareUserId],
-              },
-              {
-                headers: {
-                  "X-Api-Partner-Id": SHOPWARE_X_API_PARTNER_ID,
-                  "X-Api-Secret": SHOPWARE_X_API_SECRET,
-                  "Content-Type": "application/json",
-                },
-              }
-            );
-
-            if (shopwareResponse.status === 201 && shopwareResponse.data?.vehicleId) {
-              shopwareVehicleId = shopwareResponse.data.vehicleId;
-              console.log("✅ Vehicle created in Shopware:", shopwareVehicleId);
-            }
-          } catch (error) {
-            console.error("❌ Shopware sync failed:", error.response?.data || error.message);
-          }
-        }
-      } catch (error) {
-        console.error("❌ Error fetching Shopware user ID:", error.message);
-      }
-    }
-
-    // 🔹 5. Update Vehicle in Skynetrix with Shopware Vehicle ID (if available)
-    if (shopwareVehicleId) {
-      vehicle.shopwareVehicleId = shopwareVehicleId;
-      await vehicle.save();
-    }
-
-    // 🔹 6. Return Success Response
-    res.status(201).json({
+    // 🎯 Final Response
+    return res.status(201).json({
       message: "Vehicle created successfully.",
       vehicleId: vehicle._id,
-      shopwareVehicleId: shopwareVehicleId || null,
-      shopwareSyncStatus: shopwareSyncEnabled ? (shopwareVehicleId ? "Success" : "Failed") : "Not Enabled",
     });
-  } catch (error) {
-    console.error("❌ Vehicle creation error:", error);
-    res.status(500).json({ message: "Internal server error during vehicle creation." });
+  } catch (err) {
+    console.error("❌ Vehicle creation error:", err.message);
+    return res
+      .status(500)
+      .json({ message: "Internal server error during vehicle creation." });
   }
 };
+
 
 /**
  * @desc    Get all vehicles with dynamic filtering
@@ -188,7 +129,7 @@ const getVehicleByCustomer = async (req, res) => {
     try {
       console.log(`🔍 Querying User Service for customer ID: ${customerId}...`);
       const userResponse = await axios.get(
-        `${process.env.USER_BASE_URL}/users/${customerId}`
+        `${process.env.USER_BASE_URL}/${customerId}`
       );
 
       if (!userResponse.data || !userResponse.data.userId) {
@@ -573,6 +514,42 @@ const deleteVehicle = async (req, res) => {
   }
 };
 
+const getVehicleVinsByCustomer = async (req, res) => {
+  try {
+    const { id: customerId } = req.params;
+
+    if (!customerId) {
+      return res.status(400).json({ message: "Customer ID is required." });
+    }
+
+    // Validate ObjectId
+    if (!mongoose.Types.ObjectId.isValid(customerId)) {
+      return res.status(400).json({ message: "Invalid customer ID format." });
+    }
+
+    // Find all vehicles for this user
+    const vehicles = await Vehicle.find({ userId: customerId })
+      .select("vin")
+      .lean();
+
+    if (!vehicles || vehicles.length === 0) {
+      return res
+        .status(404)
+        .json({ message: "No vehicles found for this user." });
+    }
+
+    const vins = vehicles
+      .map((v) => v.vin?.trim().toUpperCase())
+      .filter(Boolean);
+
+    return res.status(200).json({ count: vins.length, vins });
+  } catch (error) {
+    console.error("❌ Error in getVehicleVinsByCustomer:", error.message);
+    return res.status(500).json({ message: "Internal server error." });
+  }
+};
+
+
 // 🟢 Export All Controller Functions
 module.exports = {
   createVehicle,
@@ -582,7 +559,8 @@ module.exports = {
   getVehicleById,
   updateVehicle,
   updateVehicleStatus,
-  deleteVehicle
+  deleteVehicle,
+  getVehicleVinsByCustomer
   //searchVehicles,
   //getVehicleReports,
 };

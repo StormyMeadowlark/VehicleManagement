@@ -4,9 +4,9 @@ const swaggerOptions = {
  definition: {
     openapi: "3.0.0",
     info: {
-      title: "User Management API",
+      title: "Vehicle Management API",
       version: "1.0.0",
-      description: "API documentation for the Vehcile  Management service",
+      description: "API documentation for the Vehicle Management service",
     },
   },
   apis: ["./routes/*.js"], // Path to route files
