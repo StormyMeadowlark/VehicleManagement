@@ -5,6 +5,7 @@ const { createShopWareVehicle } = require("./shopWareController");
 const logger = require("../utils/logger");
 const axios = require("axios")
 const mongoose = require("mongoose")
+const { usageQueue, addJob } = require("../utils/bullmq");
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
 // Shopware API Config
@@ -17,13 +18,19 @@ const SHOPWARE_X_API_SECRET = process.env.SHOPWARE_X_API_SECRET;
  * @route   POST /api/v1/vehicles
  * @access  Private
  */
-
 const createVehicle = async (req, res) => {
   console.log("🔹 Incoming vehicle creation request:", req.body);
 
   try {
     const { vin, make, model, year, userId: inputUserId } = req.body;
     const fallbackUserId = req.user?.id;
+    const tenantId = req.user?.tenantId;
+    const tenantType = req.user?.tenantType;
+    const userEmail = req.user?.email;
+    const userRole = req.user?.userRole;
+    const tier = req.user?.tier;
+
+
     const userId = inputUserId || fallbackUserId;
 
     // 🔒 Validate Required Fields
@@ -37,11 +44,29 @@ const createVehicle = async (req, res) => {
       });
       return res.status(400).json({
         message:
-          "VIN, Make, Model, Year, and User ID (from body or token) are required.",
+          "VIN, Make, Model, Year, Tenant ID and User ID (from body or token) are required.",
       });
     }
-
+    console.log("🔍 Extracted tier from req.user:", tier);
     console.log("✅ Using user ID:", userId);
+    console.log("✅ Using tenant ID:", tenantId);
+
+    try {
+      await addJob(usageQueue, {
+        tenantId,
+        tenantType,
+        userId,
+        userEmail,
+        userRole,
+        tier,
+        microservice: "vehicle-management",
+        action: "VEHICLE_CREATED",
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error("❌ Failed to add usage event job:", error);
+    }
+
 
     // 🧾 Save vehicle to DB
     const vehicle = new Vehicle({
@@ -67,7 +92,6 @@ const createVehicle = async (req, res) => {
       .json({ message: "Internal server error during vehicle creation." });
   }
 };
-
 
 /**
  * @desc    Get all vehicles with dynamic filtering
@@ -101,94 +125,37 @@ const getAllVehicles = async (req, res) => {
 
 /**
  * @desc    Get vehicles by customer ID
- * @route   GET /api/vehicles/by-customer/:customerId
+ * @route   GET /api/v1/vehicles/by-customer/:customerId
  * @access  Private (Requires Auth)
  */
 const getVehicleByCustomer = async (req, res) => {
-  console.log(
-    "🔹 Incoming request to fetch vehicles for customer:",
-    req.params
-  );
-
   try {
     const { customerId } = req.params;
 
-    // 🔹 1. Validate Customer ID
     if (!customerId) {
-      console.log("❌ Missing customer ID.");
       return res.status(400).json({ message: "Customer ID is required." });
     }
 
-    console.log(`✅ Received customer ID: ${customerId}`);
+    // Validate ObjectId
+    if (!mongoose.Types.ObjectId.isValid(customerId)) {
+      return res.status(400).json({ message: "Invalid customer ID format." });
+    }
 
-    let tenantId = null,
-      shopwareSyncEnabled = false,
-      userId = null;
+    // Find all vehicles for this user
+    const vehicles = await Vehicle.find({ userId: customerId })
+      .select("vin make model year status")
+      .lean();
 
-    // 🔹 2. Fetch User and Tenant Data
-    try {
-      console.log(`🔍 Querying User Service for customer ID: ${customerId}...`);
-      const userResponse = await axios.get(
-        `${process.env.USER_BASE_URL}/${customerId}`
-      );
-
-      if (!userResponse.data || !userResponse.data.userId) {
-        console.log("❌ User not found in User Service.");
-        return res.status(404).json({ message: "Customer not found." });
-      }
-
-      userId = userResponse.data.userId;
-      tenantId = userResponse.data.tenantId || null;
-      console.log(`✅ Found user ID: ${userId}, Tenant ID: ${tenantId}`);
-
-      if (tenantId) {
-        console.log("🔍 Querying Tenant Service for Shopware sync...");
-        const tenantResponse = await axios.get(
-          `${process.env.TENANT_SERVICE_URL}/tenants/${tenantId}`
-        );
-        shopwareSyncEnabled = tenantResponse.data?.shopware?.enabled || false;
-        console.log(`✅ Shopware Sync Enabled: ${shopwareSyncEnabled}`);
-      }
-    } catch (error) {
-      console.error("❌ Error fetching user or tenant data:", error.message);
+    if (!vehicles || vehicles.length === 0) {
       return res
-        .status(500)
-        .json({ message: "Failed to retrieve customer or tenant data." });
+        .status(404)
+        .json({ message: "No vehicles found for this user." });
     }
 
-    // 🔹 3. Fetch Vehicles for User
-    try {
-      if (!userId) {
-        console.log("❌ Error: No valid user ID found.");
-        return res.status(404).json({ message: "Customer not found." });
-      }
-
-      console.log(`🔍 Fetching vehicles for user ID: ${userId}...`);
-
-      const vehicles = await Vehicle.find({ userId })
-        .select("vin make model year shopwareVehicleId")
-        .lean();
-
-      if (!vehicles || vehicles.length === 0) {
-        console.log("⚠️ No vehicles found for this customer.");
-        return res
-          .status(404)
-          .json({ message: "No vehicles found for this customer." });
-      }
-
-      console.log(`✅ Found ${vehicles.length} vehicle(s) for customer.`);
-      return res.status(200).json({
-        count: vehicles.length,
-        vehicles,
-        shopwareSyncEnabled,
-      });
-    } catch (error) {
-      console.error("❌ Error fetching vehicles:", error.message);
-      return res.status(500).json({ message: "Failed to retrieve vehicles." });
-    }
+    return res.status(200).json({ count: vehicles.length, vehicles });
   } catch (error) {
-    console.error("❌ Unexpected error in getVehicleByCustomer:", error);
-    return res.status(500).json({ message: "Internal Server Error" });
+    console.error("❌ Error in getVehicleByCustomer:", error.message);
+    return res.status(500).json({ message: "Internal server error." });
   }
 };
 
@@ -198,43 +165,30 @@ const getVehicleByCustomer = async (req, res) => {
  * @access  Private (Requires Auth)
  */
 const getVehicleForLoggedInUser = async (req, res) => {
-  console.log("🚀 Route hit: GET /api/v2/vehicles/me"); // This should print
-
+  console.log("🚀 Route hit: GET /api/v2/vehicles/me");
 
   try {
-    console.log("🛠 JWT Payload:", req.user); // ✅ Log the JWT payload
-    const { id: userId, email, role, tenantIds } = req.user;
+    const { id: userId } = req.user;
 
     if (!userId) {
-      console.log("🚫 No userId found in JWT.");
-      return res
-        .status(401)
-        .json({ message: "Unauthorized. No user ID found." });
+      return res.status(401).json({ message: "Unauthorized: no user ID." });
     }
 
-    console.log(`🔍 Fetching vehicles for user: ${userId}`);
-    console.log(`🔹 Tenant IDs: ${tenantIds.join(", ")}`);
+    console.log("🔍 Looking up vehicles for user ID:", userId);
 
-    const queryUserId = mongoose.Types.ObjectId.isValid(userId)
-      ? new mongoose.Types.ObjectId(userId)
-      : userId;
+    // Query without converting userId
+    const vehicles = await Vehicle.find({ userId }).lean();
 
-    console.log("🔍 Using userId in query:", queryUserId);
-
-    const vehicles = await Vehicle.find({ userId: queryUserId }).lean();
-    console.log("🚗 Vehicles found:", vehicles);
-
-    if (!vehicles.length) {
-      console.log("⚠️ No vehicles found for this user.");
+    if (!vehicles || vehicles.length === 0) {
       return res
         .status(404)
         .json({ message: "No vehicles found for this user." });
     }
 
-    console.log(`✅ Returning ${vehicles.length} vehicle(s) for the user.`);
+    console.log(`✅ Found ${vehicles.length} vehicle(s).`);
     return res.status(200).json({ count: vehicles.length, vehicles });
-  } catch (error) {
-    console.error(`❌ Error fetching vehicles:`, error.message);
+  } catch (err) {
+    console.error("❌ Error fetching vehicles:", err.message);
     return res.status(500).json({ message: "Internal Server Error" });
   }
 };
@@ -549,6 +503,61 @@ const getVehicleVinsByCustomer = async (req, res) => {
   }
 };
 
+/**
+ * @desc    Transfer ownership of a vehicle to another user
+ * @route   PATCH /api/v1/vehicles/:id/owner
+ * @access  Private (Tenant Admin, Shop Owner, or Original Owner)
+ */
+
+const updateVehicleOwner = async (req, res) => {
+  console.log("🚗 Vehicle ownership transfer request received.");
+
+  try {
+    const { id: vehicleId } = req.params;
+    const { newUserId } = req.body;
+
+    // 🔐 Validate input
+    if (!vehicleId || !newUserId) {
+      return res
+        .status(400)
+        .json({ message: "Vehicle ID and new user ID are required." });
+    }
+
+    if (
+      !mongoose.Types.ObjectId.isValid(vehicleId) ||
+      !mongoose.Types.ObjectId.isValid(newUserId)
+    ) {
+      return res
+        .status(400)
+        .json({ message: "Invalid vehicle ID or user ID format." });
+    }
+
+    // 🔍 Find and update vehicle
+    const vehicle = await Vehicle.findById(vehicleId);
+    if (!vehicle) {
+      return res.status(404).json({ message: "Vehicle not found." });
+    }
+
+    vehicle.userId = newUserId;
+    await vehicle.save();
+
+    console.log(
+      `✅ Vehicle ${vehicle._id} ownership transferred to user ${newUserId}.`
+    );
+
+    return res.status(200).json({
+      message: "Vehicle ownership transferred successfully.",
+      vehicleId: vehicle._id,
+      newOwnerId: newUserId,
+    });
+  } catch (err) {
+    console.error("❌ Error transferring vehicle ownership:", err.message);
+    return res
+      .status(500)
+      .json({ message: "Internal server error during ownership transfer." });
+  }
+};
+
 
 // 🟢 Export All Controller Functions
 module.exports = {
@@ -560,7 +569,8 @@ module.exports = {
   updateVehicle,
   updateVehicleStatus,
   deleteVehicle,
-  getVehicleVinsByCustomer
+  getVehicleVinsByCustomer,
+  updateVehicleOwner,
   //searchVehicles,
   //getVehicleReports,
 };

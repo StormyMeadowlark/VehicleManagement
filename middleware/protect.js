@@ -24,6 +24,7 @@ const protect = (req, res, next) => {
       userRole: decoded.userRole || "Unauthenticated",
       tenantId: decoded.tenantId || "Unknown",
       tenantType: decoded.tenantType || "Unknown",
+      tier: decoded.tier|| "Basic"
     };
 
     console.log("✅ User attached to request:", req.user);

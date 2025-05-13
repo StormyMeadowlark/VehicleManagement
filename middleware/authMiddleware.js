@@ -19,6 +19,8 @@ const authenticate = (req, res, next) => {
       userRole: decoded.userRole || "Unauthenticated",
       tenantId: decoded.tenantId || "Unknown",
       tenantType: decoded.tenantType || "Unknown",
+      tier: decoded.tier || "Basic",
+      generalRole: decoded.generalRole || "User"
     };
 
     next();
